@@ -1,0 +1,1168 @@
+---
+title: "Exploratory Data Analysis and Logistic Regression"
+author: "Rama Alassi & Ryan Rizk"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: readable
+    highlight: espresso
+    number_sections: no
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+---
+
+
+## Introduction
+
+For this project we are using the forest fire data set. The data  set contains various numerical features, and is separated into two groups representing different regions of Canada. These features would help us build a model to predict whether a forest with certain characteristics would experience fire. This report performs Exploratory Data Analysis (EDA), data preprocessing. Then we tried to fit multiple models such as logistic regression, LDA, QDA, KNN, SVM, decision tree, and other models. on the forest_fires_dataset.csv data set and assess their performance. And finally, we compared the performance of the models and analyse their output. 
+
+
+## Install and Load Libraries
+
+```{r , echo=TRUE, message=FALSE, warning=FALSE}
+
+# Install and load required packages
+if (!require("dplyr")) install.packages("dplyr", repos = "https://cloud.r-project.org/")
+if (!require("ggplot2")) install.packages("ggplot2", repos = "https://cloud.r-project.org/")
+if (!require("caret")) install.packages("caret", repos = "https://cloud.r-project.org/")
+if (!require("glmnet")) install.packages("glmnet", repos = "https://cloud.r-project.org/")
+if (!require("ggcorrplot")) install.packages("ggcorrplot", repos = "https://cloud.r-project.org/")
+if (!require("nnet")) install.packages("nnet", repos = "https://cloud.r-project.org/")
+if (!require("bloom"))install.packages("bloom", repos = "https://cloud.r-project.org/")
+if (!require("pROC"))install.packages("pROC", repos = "https://cloud.r-project.org/")
+if (!require("class"))install.packages("class", repos="https://cloud.r-project.org/")
+if (!require("mice"))install.packages("class", repos="https://cloud.r-project.org/")
+if (!require("broom"))install.packages("class", repos="https://cloud.r-project.org/")
+if (!require("MASS"))install.packages("MASS", repos="https://cloud.r-project.org/")
+if (!require("xgboost"))install.packages("xgboost", repos="https://cloud.r-project.org/")
+if (!require("DALEX"))install.packages("DALEX", repos="https://cloud.r-project.org/")
+
+library(DALEX)# logistic regression and PCA
+library(reshape2)# for graphs
+library(xgboost)# for tree
+library(pROC) #Provides tools for analyzing the performance of classification models. It is used for the ROC curve
+library(MASS) #LDA and QDA functions
+library(broom) # It makes it easier to work with model outputs, such as coefficients, confidence intervals, and p-values.
+library(mice) # handling missing values
+library(dplyr) #data manipulation library.
+library(ggplot2)# Provides visualization tools. Used for plotting.
+library(caret) # data splitting
+library(glmnet) #elastic net regularization
+library(ggcorrplot) # A package for visualizing correlation matrices
+library(nnet) #fitting neural networks
+
+
+# load the dataset, ensuring the first row becomes column names
+data <- read.csv("C:/Users/admin/Desktop/forest_fires_dataset.csv", stringsAsFactors = FALSE, header = TRUE)
+```
+We installed all the packages that allows us to analyse the data and build different models.
+
+ ## Data Preparation
+
+```{r, warning=TRUE, message=TRUE}
+print(data[1,])
+# Remove the first row
+data <- data[-1, ]
+
+# Trim space from column names
+colnames(data) <- trimws(colnames(data))
+
+# Check column count
+if (ncol(data) < 14) stop("The dataset has fewer than 14 columns.")
+
+# Numeric conversion with NA handling
+data[,-14] <- lapply(data[,-14], function(col) {
+  suppressWarnings(as.numeric(col))
+})
+
+# Create a logical index for rows without NAs in all but the 14th column
+index <- apply(data[, -14], 1, function(x) !any(is.na(x)))
+
+# Assign column names, ensure correct length
+expected_colnames <- c("day", "month", "yeaSr", "Temperature", "RH", "Ws", 
+                       "Rain", "FFMC", "DMC", "DC", "ISI", "BUI", "FWI", "Classes")
+if (length(expected_colnames) != ncol(data)) stop("Mismatch between data columns and expected column names.")
+colnames(data) <- expected_colnames
+
+# Replace missing or empty column names with default ones
+if (any(is.na(colnames(data)) | colnames(data) == "")) {
+  colnames(data)[is.na(colnames(data)) | colnames(data) == ""] <- 
+    paste0("X", seq_len(sum(is.na(colnames(data)) | colnames(data) == "")))
+}
+
+# Remove rows with all NA values
+data <- data[!apply(is.na(data), 1, all), ]
+
+
+# Display structure and summary of the cleaned dataset
+cat("Dataset structure:\n", capture.output(str(data)), sep = "\n")
+cat("\nDataset summary:\n", capture.output(summary(data)), sep = "\n")
+
+print(dim(data))
+```
+  We initially started by some cleaning steps. The first row is the column names, so we removed it to avoid confusion. Then we removed the spacing from the columns names using the trim() function to ensure accurate identification. Numeric conversion is performed on relevant columns, handling potential errors in a way that doesn't cause the program to crash or produce unexpected results. We ensured correct column names and replaces missing or empty names with defaults. And we removed the rows with NA values.
+After printing the results we realized that the mean  and the median are approximately equal for the following features Date, Temperature, Ws, Rain,indicating these variables follow a distribution close to normal.This indicates that the data could be standardized. Moreover, the DC and Rain variables have very large difference between the third quartile and the maximum number, so the observasions of DC and Rain could be right skew.
+
+```{r message=FALSE, warning=FALSE}
+# Check and handle missing values
+data <- data.frame(lapply(data, function(column) {
+  if (is.numeric(column)) {
+    # Replace NA in numeric columns with the median (ignoring NAs)
+    column[is.na(column)] <- median(column, na.rm = TRUE)
+  }
+  column
+}))
+
+# Create factor levels if necessary
+if (is.null(levels(data$Classes))) {
+  levels(data$Classes) <- c("not fire", "fire")
+}
+
+data <- data %>%
+  mutate(Region = case_when(
+    row_number() <= 122 ~ "Cordillera",
+    TRUE ~ "Hudson Bay"
+  )) %>%
+  mutate(Region = ifelse(Region == "Cordillera", -1, 1))
+
+
+# Display structure of the cleaned dataset
+cat("Dataset structure:\n")
+str(data)
+cat("\nDataset summary:\n")
+
+```
+  We added a new feature representing the region of each observation is in. At first, we added the the new qualitative feature with 2 values ("Cordillera", "Hudson Bay"), the we encoded it to give it a quantitative value  (-1 for"Cordillera", 1 for "Hudson Bay"). The encoding would allow as to quantify and assess the relation of the forest region with the fire.
+
+```{r, warning = FALSE, message = FALSE}
+
+
+# Count duplicates
+set.seed(111)
+duplicates <- duplicated(data)
+cat("Duplicates before:", sum(duplicates), "\n")
+data <- unique(data) # Remove duplicates
+duplicates <- duplicated(data) # Verify removal
+cat("Duplicates after:", sum(duplicates), "\n")
+
+# Ensure 'Classes' column is consistent and convert to factor
+data$Classes <- factor(trimws(data$Classes), levels = c("not fire", "fire"))
+
+# Drop a column by its name
+data <- data[, !colnames(data) %in% c("yeaSr")]
+print(dim(data)) # To verify the reduction in the number of columns
+
+# Separate untouched columns (13 and 14)
+untouched_data <- data[, c(13, 14)]
+standardized_data <- data[, -c(13, 14)]
+
+# Identify numeric columns within the subset
+numeric_columns <- sapply(standardized_data, is.numeric)
+
+# Standardize only the numeric columns of the subset
+standardized_data[numeric_columns] <- scale(standardized_data[numeric_columns])
+
+# Combine standardized data with untouched columns
+final_data <- cbind(standardized_data, untouched_data)
+
+# Ensure 'Classes' is preserved and placed correctly
+final_data$Classes <- data$Classes
+
+# Update the main `data` object
+data <- final_data
+
+# Check for class imbalance
+class_distribution <- table(data$Classes)
+cat("Class Distribution:\n")
+print(class_distribution)
+
+# View standardized data structure
+str(data)
+
+```
+
+  Then we checked for duplicates to avoid miscalculations occurring due to repetition and ensure a unique data set, so we handled this problem using the unique() which ensure that every row in the data set is unique. for our data 1 duplicate is found and removed. For the response column, we used the trimws() function to remove extra spaces could be in the beginning or ending of the quantitative value to ensure proper comparison.We also deleted the "year" column since it is a constant variable (all observations are within 2012) since it has no effect on the response. And then we used the factor() function, which convert the values in the classes column to factor variables by specifying the column and the levels (different classes). This step allows the machine learning model to properly handling categorical values when applying different modeling functions like lm, and glim. After this we checked if a class imbalance exists and we found that the difference between the classes is not significant. 
+
+## Exploraty and Data Analysis
+```{r, warning=FALSE, message= FALSE}
+
+# Visualize numeric variables
+numeric_data <- data[,-c(1,2,3,14)]
+ggplot(stack(numeric_data), aes(x = ind, y = values)) +
+  geom_boxplot() +
+  labs(title = "Boxplots of Numeric Variables", x = "Variables", y = "Values") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ 
+```
+
+
+  The Tempareture, Relative Humidity (RH), and Wind Speed (Ws) shows symmetric distributions, with a few outliers.In contrast, Rain and Drought code show significant skewness, with most values few extreme outliers, indicating a need for transformation or scaling.The Fine Fuel Moisture Code(FFMC) and Duff Moisture Code (DMC) are relatively symmetric, with moderate to high number of outliers. Similarly, the Buildup Index (BUI) shares a comparable pattern of skewness and outliers. The Initial Spread Index (ISI) appears evenly distributed with fewer outliers compared to the DC. Lastly, the Fire Weather Index (FWI) is balanced but includes some higher-end outliers.
+
+
+## Correlation Heatmap
+
+```{r, warning=FALSE, message= FALSE}
+colSums(is.na(numeric_data))
+
+# Convert column 14 to numeric (based on factor levels)
+data[, 14] <- as.numeric(as.factor(data[, 14]))
+
+# Recompute the correlation matrix with the modified data
+numeric_data <- data[sapply(data, is.numeric)]
+cor_matrix <- cor(numeric_data, use = "complete.obs")
+
+# Plot the correlation heatmap 
+ggcorrplot(cor_matrix, lab = TRUE, title = "Correlation Heatmap") +
+  theme(
+    aspect.ratio = 0.5 # Adjust this to make the boxes more square-like (1 makes it equal height and width)
+  )
+
+```
+  The correlation heatmap visually represents the relationships between variables, where the red color indicates a strong positive correlation and the numeric values represent the correlation coefficients. From the heatmap, we observe a high correlation between the variables Drought Code, Build-Up Index, Fire Weather Index, Fine Fuel Moisture Code, Initial Spread Index, and Duff Moisture Code (Strong red color and coefficients between 0.7 and 0.99).
+
+  This high correlation is expected due to the interdependencies among these variables. For example, the Build-Up Index (BUI) and the Fire Weather Index (FWI) are closely related, as the BUI is a component of the FWI system. Therefore, it is logical to see a robust correlation between these two indices.
+
+  The blue color shows a negative correlation between RH and all the other variables is except rain and Ws with a very light orange color and coefficient 0.22 and 0.24 respectively showing a weak relationship.
+
+## Logistic Regresion
+
+```{r warning= FALSE, message=FALSE, echo = FALSE}
+set.seed(111)
+
+# Split the data into training and testing sets
+split <- createDataPartition(data$Class, p = 0.8, list = FALSE)
+train_data <- data[split, ]
+test_data <- data[-split, ]
+
+# Step 1: Standardize the predictor variables for training data
+predictor_cols <- c("Temperature", "RH", "Ws", "Rain", "FFMC", "DMC", "ISI", "BUI", "FWI", "Region", "DC")
+train_data_scaled <- train_data
+train_data_scaled[predictor_cols] <- scale(train_data[predictor_cols])
+
+# Step 2: Perform PCA on the standardized predictors of training data
+pca <- prcomp(train_data_scaled[predictor_cols], center = TRUE, scale. = TRUE)
+
+# Step 3: View the proportion of variance explained by each principal component
+summary(pca)
+
+# Step 4: Choose how many principal components to retain based on the explained variance
+cumulative_variance <- cumsum(pca$sdev^2) / sum(pca$sdev^2)
+num_components <- which(cumulative_variance >= 0.95)[1]
+
+# Step 5: Print the selected features for each principal component
+# Extract the loadings (contributions of original features to principal components)
+loadings <- pca$rotation[, 1:num_components]  # Loadings for the selected principal components
+
+# Print the names of the original features for each component
+for (i in 1:num_components) {
+  cat(paste("\nFeatures for PC", i, ":\n"))
+  features <- names(train_data[predictor_cols])  # Original feature names
+  feature_contributions <- loadings[, i]  # Contributions of the features to the i-th principal component
+  sorted_contributions <- sort(abs(feature_contributions), decreasing = TRUE)  # Sort by absolute value
+  top_features <- names(sorted_contributions)[1:5]  # Select top 5 features contributing to this component
+  print(top_features)
+}
+
+# Step 6: Create a new data frame with the selected principal components for training data
+train_data_pca <- data.frame(pca$x[, 1:num_components])
+train_data_pca$Classes <- train_data$Classes  # Add the response variable
+
+# Step 7: Fit the logistic regression model using the principal components
+final_model_pca <- glm(Classes ~ ., data = train_data_pca, family = binomial)
+
+```
+
+  The results represent the output of Principal Component Analysis (PCA) on a dataset, with each principal component (PC) showing its importance based on standard deviation, proportion of variance explained, and cumulative variance. PC1 has the highest standard deviation of 2.4023 and explains 52.46% of the variance, indicating it captures the most significant variation in the data. The variance explained decreases with each subsequent component, with PC2 explaining 16.06% and so on. By PC6, the explained variance drops significantly, with each component contributing less than 5% to the total variance. The cumulative proportion shows that the first few components (PC1 to PC5) account for over 91% of the total variance, and by PC8, more than 99% of the variance is explained. This suggests that most of the variability in the dataset can be captured using just the first few principal components, making it a good candidate for dimensionality reduction while preserving significant information. 
+  
+# Confusion Matrix
+```{r message = TRUE}
+
+# Step 7: Make predictions on the testing data
+test_data_scaled <- test_data
+test_data_scaled[predictor_cols] <- scale(test_data[predictor_cols], center = pca$center, scale = pca$scale)
+
+# Project the test data onto the PCA space
+test_data_pca <- predict(pca, newdata = test_data_scaled)
+test_data_pca <- data.frame(test_data_pca[, 1:num_components])
+
+# Make predictions using the final model
+predicted_probs <- predict(final_model_pca, newdata = test_data_pca, type = "response")
+predicted_classes <- ifelse(predicted_probs > 0.5, "Yes", "No")
+
+# Create the confusion matrix
+confusion_matrix <- table(test_data$Classes, predicted_classes)
+
+# Print the confusion matrix
+print(confusion_matrix)
+
+# Make predictions using the final model (probabilities for class 1)
+predicted_probs <- predict(final_model_pca, newdata = test_data_pca, type = "response")
+```
+True Negative (TN): 19 - The model correctly classified 19 instances as "not fire" when they were actually "not fire."
+True Positive (TP): 27 - The model correctly classified 27 instances as "fire" when they were actually "fire."
+False Positive (FP): 2 - The model misclassified 2 instances as "fire" when they were actually "not fire."
+False Negative (FN): 0 - The model predicted all the "fire" instances correctly. 
+The total number is 48 which represent testing sample size (20% of the data set).
+
+# Different Metrics
+
+To determine how good is the model performing, different metrics calculated and assessed quantifying its performance.
+
+```{r message = FALSE, warning=FALSE}
+
+set.seed(111)
+# Extract values from the confusion matrix
+TN <- confusion_matrix[1, 1]
+FP <- confusion_matrix[1, 2]
+FN <- confusion_matrix[2, 1]
+TP <- confusion_matrix[2, 2]
+
+# Calculate accuracy
+accuracy <- (TP + TN) / sum(confusion_matrix)
+
+# Calculate test error
+test_error <- (FP + FN) / sum(confusion_matrix)
+
+# Calculate recall
+recall <- TP / (TP + FN)
+
+# Calculate precision
+precision <- TP / (TP + FP)
+
+# Calculate F1 score
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+# Print results
+print(paste("Accuracy:", accuracy))
+print(paste("Test Error:", test_error))
+print(paste("Recall:", recall))
+print(paste("Precision:", precision))
+print(paste("F1 Score:", f1_score))
+
+```
+Accuracy (0.9583): This means that 95.83% of the predictions are correct, both for fire and not fire cases.
+Test Error (0.04166): This indicates that 4.16% of the predictions are incorrect, meaning there are few misclassifications.
+Recall (1): This means that 100% of the actual fire cases are correctly predicted as fire. 
+Precision (0.931): This mean 93.1% of the predicted 'not fire' values are actually 'not fire'.".
+F1 Score (0.964): This is a balanced measure that combines both precision and recall. Since we have high precision (1) and reasonably high recall (0.88), the F1 score is also high, indicating that the model has a good balance between precision and recall.
+
+## KNN
+
+```{r message = FALSE, warning=FALSE}
+# Set seed for reproducibility
+set.seed(111)
+# Impute missing values in the training data
+imp <- mice(train_data)
+train_data <- complete(imp, 1)
+# Handle missing values 
+#train_data <- na.omit(train_data)
+#test_data <- na.omit(test_data)
+
+# Prepare feature and target data for training and testing
+featureDataTrain <- train_data[, c("Temperature", "RH", "Ws", "Rain", "FFMC", "DMC", "ISI", "BUI", "FWI", "Region", "DC")]
+targetDataTrain <- train_data$Class
+
+featureDataTest <- test_data[, c("Temperature", "RH", "Ws", "Rain", "FFMC", "DMC", "ISI", "BUI", "FWI", "Region", "DC")]
+targetDataTest <- test_data$Class
+
+
+# Scale features
+featureDataTrain <- scale(featureDataTrain)
+featureDataTest <- scale(featureDataTest)
+
+# KNN model and evaluation
+k_values <- 1:20
+mse_values <- numeric(length(k_values))
+
+for (i in seq_along(k_values)) {
+  k <- k_values[i]
+  predictions <- knn(train = featureDataTrain, test = featureDataTest, cl = targetDataTrain, k = k)
+
+  # Evaluate performance (consider other metrics like accuracy, precision, recall, F1-score)
+  confusion_matrix <- table(predictions, targetDataTest)
+  accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+  mse_values[i] <- 1 - accuracy  # Calculate MSE from accuracy
+}
+
+# Plot the MSE curve
+mse_data <- data.frame(k = k_values, MSE = mse_values)
+ggplot(mse_data, aes(x = k, y = MSE)) +
+  geom_line(color = "blue") +
+  geom_point(color = "red") +
+  labs(title = "MSE vs. K", x = "K", y = "MSE")
+
+
+```
+
+
+  The for loop iterates over different K values to find the optimal number of neighbors. For each K, the model predicts the class labels for the test data based on the nearest neighbors in the training data. The model performance is evaluated using Mean Squared Error (MSE) for each k value. Finally, visualization of the relationship between K and MSE
+to identify the best-performing K value.The Graph represents that the lowest MSE when K=10. 
+
+
+```{r message = FALSE, warning=FALSE}
+
+prediction10 <- knn(train = featureDataTrain, test = featureDataTest, cl = targetDataTrain, k = 10)
+
+
+confusion_matrix1 <- table(prediction10, targetDataTest)
+print(confusion_matrix1)
+
+# Extract probabilities for the positive class
+knn_probabilities <- attr(prediction10, "prob")
+
+# Adjust probabilities to always refer to the positive class
+# Assuming the positive class is the second level of the factor
+knn_probabilities <- ifelse(
+  prediction10 == levels(train_data)[2], 
+  knn_probabilities, 
+  1 - knn_probabilities
+)
+
+```
+We test the KNN model with K=10 using the testing data and computed the confusion matrix.
+
+True Negative (TN): 16 - The model correctly classified 16 instances as "not fire" when they were actually "not fire."
+True Positive (TP): 26 - The model correctly classified 26 instances as "fire" when they were actually "fire."
+False Positive (FP): 1 - The model classified all the "not fire" correctly.
+False Negative (FN): 5 - The model misclassified 5 instances as "not fire" when they were actually "fire."
+The total number is 48 which represent testing sample size (20% of the data set).
+
+Even when we chose the K value that gives the lowest MSE, the model is doing errors.
+
+# Different Metrics
+
+```{r message = FALSE, warning=FALSE}
+
+set.seed(111)
+# Extract values from the confusion matrix
+TN <- confusion_matrix1[1, 1]
+FP <- confusion_matrix1[1, 2]
+FN <- confusion_matrix1[2, 1]
+TP <- confusion_matrix1[2, 2]
+
+# Calculate accuracy
+accuracy <- (TP + TN) / sum(confusion_matrix)
+
+# Calculate test error
+test_error <- (FP + FN) / sum(confusion_matrix)
+
+# Calculate recall
+recall <- TP / (TP + FN)
+
+# Calculate precision
+precision <- TP / (TP + FP)
+
+# Calculate F1 score
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+# Print results
+print(paste("Accuracy:", accuracy))
+print(paste("Test Error:", test_error))
+print(paste("Recall:", recall))
+print(paste("Precision:", precision))
+print(paste("F1 Score:", f1_score))
+
+```
+Accuracy (0.875): This means that 87.5% of the predictions are correct, both for fire and not fire cases.
+Test Error (0.125): This indicates that 12.5% of the predictions are incorrect, meaning there are few misclassifications.
+Recall (0.838): This means that 83.8% of the actual fire cases are correctly predicted as fire. 
+Precision (0.96): This mean 96% of the "not fire" predictions are correctly predicted.
+F1 Score (0.89): This is a balanced measure that combines both precision and recall. Since we have high precision (1) and reasonably high recall (0.88), the F1 score is also high, indicating that the model has a good balance between precision and recall.
+
+
+
+## LDA
+```{r message = FALSE, warning=FALSE}
+
+set.seed(111)
+lda.fit <- lda(Classes ~ Temperature + RH + Ws + Rain + FFMC + 
+    DMC + ISI + BUI + FWI + Region + DC, family = binomial, data = train_data)
+
+lda.fit
+```
+  The model assumes an equal probability of a forest experiencing a fire or not. High absolute coefficient features have a major role in class separation. With high absolute values of their coefficients, temperature (0.104), Ws (0.129), Rain (159), Region (0.15), ISI (0.131), FWI (0.127), and DMC(0.115) strongly contribute in the separation between the two classes "fire" and "not fire". While, FFMC (0.099), BUI (0.07) , and RH (0.04) contribute less in the class separation, DC(0.002) have very low absolute value of its coefficient and has a very minimal effect on class separation.
+
+# LDA Performance
+
+After the LDA model is trained, we need to test its performance on the unseen data. So, we predicted the class of each observation in the unseen data (test_data) used before. 
+
+```{r message = FALSE, warning=FALSE}
+
+set.seed(111)
+# testing the model
+ldaPredictions <- predict(lda.fit, newdata = test_data)
+
+# Predictions
+ldaPredictions <- predict(lda.fit, newdata = test_data)
+predictions_lda <- as.integer(ldaPredictions$class) - 1  
+
+# Verify Lengths
+if (length(predictions_lda) != length(test_data$Classes)) {
+    stop("Length of predictions and actual values do not match!")
+}
+```
+
+# Confusion Matrix
+
+```{r message = FALSE, warning=FALSE}
+# Confusion Matrix
+conf_matrix_lda <- table(Predicted = predictions_lda, Actual = test_data$Classes)
+# Print Results
+print(conf_matrix_lda)
+```
+True Negative (TN): 20 - The model correctly classified 20 instances as "not fire" when they were actually "not fire."
+True Positive (TP): 26 - The model correctly classified 26 instances as "fire" when they were actually "fire."
+False Positive (FP): 1 - The model misclassified 1 instance as "fire" when it is actually "fire."
+False Negative (FN): 1 - The model misclassified 1 instance as "not fire" when it is actually "fire."
+The total number is 48 which represent testing sample size (20% of the data set).
+
+# Different Metrics
+
+```{r message = FALSE, warning=FALSE}
+
+# Calculate Metrics
+accuracy_lda <- sum(diag(conf_matrix_lda)) / sum(conf_matrix_lda)
+test_error_lda <- 1 - accuracy_lda
+recall_lda <- conf_matrix_lda[2, 2] / sum(conf_matrix_lda[2, ])
+precision_lda <- conf_matrix_lda[2, 2] / sum(conf_matrix_lda[, 2])
+f1_score_lda <- 2 * (precision_lda * recall_lda) / (precision_lda + recall_lda)
+
+# Print Results
+print(paste("Accuracy:", accuracy_lda))
+print(paste("Test Error:", test_error_lda))
+print(paste("Recall:", recall_lda))
+print(paste("Precision:", precision_lda))
+print(paste("F1 Score:", f1_score_lda))
+
+```
+
+
+Accuracy (0.958): This means that 95.8% of the predictions are correct, both for fire and not fire cases.
+Test Error (0.0416): This indicates that 4.16% of the predictions are incorrect, meaning there are few misclassifications.
+Recall (0.962): This means that 96.2% of the actual fire cases are correctly predicted. 
+Precision (0.962): This mean 96.2% of the "not fire" predictions are correctly predicted.
+F1 Score (0.962): The F1 score is also high, indicating that the model has a good balance between precision and recall.
+
+The overall performance of the model is good. However other models performed better than KNN.
+
+## QDA
+
+
+
+```{r}
+set.seed(111)
+qda.fit <- qda(Classes ~ Temperature + RH + Ws + Rain + FFMC + 
+    DMC + ISI + BUI + FWI + Region + DC, family = binomial, data = train_data)
+qda.fit
+```
+  The prior mean values of each predictor variable for each class. The mean temperature for the "not fire" class is -0.5933114, while the mean temperature for the "fire" class is 0.4369921. The differences in mean values between the two classes suggest that these variables are important in distinguishing between the two classes. For example, higher values of FFMC, DMC, ISI, BUI, and FWI are associated with the "fire" class, while lower values are associated with the "not fire" class. The temperature tends to be lower for non-fire events and 
+# Prediction
+
+```{r}
+set.seed(111)
+QDAPredictions <- predict(qda.fit, newdata = test_data)
+
+# QDA Predictions
+QDAPredictions <- predict(qda.fit, newdata = test_data)
+
+# Convert predictions to binary class labels (0 or 1)
+Predictions_QDA <- as.integer(QDAPredictions$class) - 1
+```
+
+# Confusion Matrix
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Confusion Matrix
+conf_matrix_qda <- table(Predicted = Predictions_QDA, Actual = test_data$Classes)
+
+# Print Confusion Matrix
+print(conf_matrix_qda)
+```
+True Negative (TN): 20 - The model correctly classified 20 instances as "not fire" when they were actually "not fire."
+True Positive (TP): 27 - The model correctly classified 27 instances as "fire" when they were actually "fire."
+False Positive (FP): 1 - The model misclassified 1 instance as "fire" when it is actually "fire."
+False Negative (FN): 0 - The model did not misclassify any instance as "not fire" when it is actually "fire."
+The total number is 48 which represent testing sample size (20% of the data set).
+
+# Different Metrics
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+# Calculate Accuracy
+accuracy_qda <- sum(diag(conf_matrix_qda)) / sum(conf_matrix_qda)
+
+# Calculate Test Error
+test_error_qda <- 1 - accuracy_qda
+
+# Calculate Recall (Sensitivity)
+recall_qda <- ifelse(sum(conf_matrix_qda[2, ]) > 0, 
+                     conf_matrix_qda[2, 2] / sum(conf_matrix_qda[2, ]), 
+                     NA)
+
+# Calculate Precision
+precision_qda <- ifelse(sum(conf_matrix_qda[, 2]) > 0, 
+                        conf_matrix_qda[2, 2] / sum(conf_matrix_qda[, 2]), 
+                        NA)
+
+# Calculate F1 Score
+f1_score_qda <- ifelse(!is.na(precision_qda) && !is.na(recall_qda) && 
+                       (precision_qda + recall_qda) > 0,
+                       2 * (precision_qda * recall_qda) / (precision_qda + recall_qda),
+                       NA)
+
+# Print Results
+cat("Accuracy:", round(accuracy_qda, 4), "\n")
+cat("Test Error:", round(test_error_qda, 4), "\n")
+cat("Recall:", ifelse(is.na(recall_qda), "Undefined", round(recall_qda, 4)), "\n")
+cat("Precision:", ifelse(is.na(precision_qda), "Undefined", round(precision_qda, 4)), "\n")
+cat("F1 Score:", ifelse(is.na(f1_score_qda), "Undefined", round(f1_score_qda, 4)), "\n")
+
+```
+
+Accuracy (0.979): This means that 97.9% of the predictions are correct, both for fire and not fire cases.
+Test Error (0.0208): This indicates that 2.08% of the predictions are incorrect, meaning there are few misclassifications.
+Recall (0.9643): This means that 96.43% of the actual fire cases are correctly predicted. 
+Precision (1): This mean all of the "not fire" predictions are correctly predicted.
+F1 Score (0.9818): The F1 score is also high, indicating that the model has a good balance between precision and recall.
+
+## Decision tree (pruned and unpruned)
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+# Install and load required packages
+if (!require("rpart")) install.packages("rpart", repos = "https://cloud.r-project.org/")
+if (!require("rpart.plot")) install.packages("rpart.plot", repos = "https://cloud.r-project.org/")
+library(rpart)
+library(rpart.plot)
+
+# Unpruned decision tree
+unpruned_tree <- rpart(Classes ~ Temperature + RH + Ws + Rain + FFMC + DMC + ISI + BUI + FWI + Region + DC, 
+                       data = train_data, method = "class")
+
+# Pruned decision tree (with cost-complexity pruning)
+pruned_tree <- prune(unpruned_tree, cp = 0.01)
+
+# Plotting the unpruned tree
+par(mfrow = c(1, 2))  # Set up for side-by-side plotting
+
+# Unpruned tree plot
+rpart.plot(unpruned_tree, main = "Unpruned Decision Tree", extra = 104, type = 3, cex = 0.8)
+
+# Pruned tree plot
+rpart.plot(pruned_tree, main = "Pruned Decision Tree", extra = 104, type = 3, cex = 0.8)
+summary(unpruned_tree)  # Lists variable importance
+summary(pruned_tree)  # Lists variable importance
+
+
+```
+  
+  The tree predicts the class (fire or not fire) based on various environmental factors like Temperature, RH, Wind speed (Ws), etc. The data used for training has 198 observations, split into two terminal nodes (Node 2 and Node 3). Node 2 with 82 observations always predicts the class not fire. Node 3 with 116 observations predicts the class fire with 97.4% probability. The variable importance table ranks the predictors based on their contribution to splitting the data, ISI and FFMC are the most important. The "complexity parameter" (CP) table shows two potential splits, the tree chooses the split that minimizes the relative error. The first split was on ISI which gave the most improvement in classification accuracy. The surrogate splits are the backups when the primary variable is missing. This shows the hierarchical decision making and the key features that influence fire.
+  The unpruned and pruned decision trees were generated using the rpart package. The trees split the data based on the variable that maximizes class separation. In this case the primary splitting variable in both trees is ISI (Initial Spread Index) with the first split at ISI < -0.53. This means ISI is the most important feature to distinguish between "fire" and "not fire". The unpruned tree evaluates all possible splits and creates nodes until it minimizes impurity. The pruned tree applies cost-complexity pruning with cp = 0.01 and simplifies the tree structure while keeping the predictive power. Both trees show that when ISI < -0.53 the observations are classified as "not fire" (100% probability) and when ISI >= -0.53 the majority are classified as "fire" (97.4% probability). Surrogate splits like FFMC and FWI are used when ISI is not available to ensure robust decision making. Although other variables (e.g. FFMC, DMC, FWI) are considered for splits, ISI always provides the most improvement in node purity so it’s the dominant feature in the model.
+
+## Decision tree (bagging)
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+# Install and load the randomForest package for bagging
+if (!require("randomForest")) install.packages("randomForest", repos = "https://cloud.r-project.org/")
+library(randomForest)
+
+# Fit a random forest model (bagging)
+bagging_model <- randomForest(Classes ~ Temperature + RH + Ws + Rain + FFMC + DMC + ISI + BUI + FWI + Region + DC,
+                              data = train_data, method = "class", ntree = 500)
+
+# View model summary
+print(bagging_model)
+
+
+# Evaluate the model
+bagging_predictions <- predict(bagging_model, newdata = test_data)
+
+# Generate predictions and probabilities for class 1 (in the case of a binary classification)
+bagging_probs <- predict(bagging_model, newdata = test_data, type = "prob")[, 2]  # Probabilities for class 1
+
+confusionMatrix(bagging_predictions, test_data$Classes)
+
+
+```
+The error rate of the model is 3.03% which means that the model misclassifies 3.03% of the predictions.
+
+Confusion matrix:
+True Negative (TN): 21 - The model correctly classified 21 instances as "not fire" when they were actually "not fire."
+True Positive (TP): 27 - The model correctly classified 27 instances as "fire" when they were actually "fire."
+False Positive (FP): 0 - The model misclassified 0 instance as "fire" when it is actually "fire."
+False Negative (FN): 0 - The model did not misclassify any instance as "not fire" when it is actually "fire."
+The total number is 48 which represent testing sample size (20% of the data set).
+
+Different metrics:
+  Accuracy (1) meaning the model predicted the correct label of the observations in the test set. Kappa(1) which is a measure to show how The predictions and the observations agrees and 1 means the model classified every instance correctly. The high accuracy and kappa values are explained by the confusion matrix where we do not have any wrong predictions.In addition, the model have very high sensitivity, specificity, precision,and balanced accuracy ( the average between sensitivity and specificity).
+  The accuracy value falls in the confidence interval of 92.6%. Moreover, the No Information Rate (the proportion of the most frequent class in the dataset) is 0.5625 which indicates that the model would be accurate 56.25% of the time if it consistently predicted the majority class.
+  The  P-Value [Acc > NIR] : 1.014e-12 is extremely small showing that the accuracy is better than the NIR.
+  The McNemar's test depends on the wrong classifications. The model has achieved perfect predictions, and there are no disagreements between predicted and actual classes, so McNemar's test cannot be performed.
+  
+
+## Tree (Random Forest)
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+# Fit a random forest model
+random_forest_model <- randomForest(Classes ~ Temperature + RH + Ws + Rain + FFMC + DMC + ISI + BUI + FWI + Region + DC,
+                                    data = train_data, method = "class", ntree = 500)
+
+# View model summary
+print(random_forest_model)
+
+# Evaluate model
+rf_predictions <- predict(random_forest_model, newdata = test_data)
+confusionMatrix(rf_predictions, test_data$Classes)
+
+# Generate ROC curve for Random Forest (using probabilities for class 1)
+rf_probs <- predict(random_forest_model, newdata = test_data, type = "prob")[, 2]  # Probabilities for class 1
+
+```
+
+
+## Tree (boosting)
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+
+# Convert 'Classes' to numeric: 0 for 'not fire', 1 for 'fire'
+train_labels <- as.numeric(factor(train_data$Classes)) - 1
+test_labels <- as.numeric(factor(test_data$Classes)) - 1
+
+# Remove target variable from training and test data
+train_data <- train_data[, -which(names(train_data) == "Classes")]
+test_data <- test_data[, -which(names(test_data) == "Classes")]
+
+# Convert logical and factor columns to numeric
+train_data[] <- lapply(train_data, function(x) {
+  if (is.logical(x)) {
+    return(as.numeric(x))  # Convert logical to numeric
+  } else if (is.factor(x)) {
+    return(as.numeric(as.factor(x)))  # Convert factor to numeric
+  } else {
+    return(x)  # Leave numeric columns as they are
+  }
+})
+
+test_data[] <- lapply(test_data, function(x) {
+  if (is.logical(x)) {
+    return(as.numeric(x))  # Convert logical to numeric
+  } else if (is.factor(x)) {
+    return(as.numeric(as.factor(x)))  # Convert factor to numeric
+  } else {
+    return(x)  # Leave numeric columns as they are
+  }
+})
+
+# Convert to matrix for XGBoost
+train_data_numeric <- as.matrix(train_data)
+test_data_numeric <- as.matrix(test_data)
+
+# Create DMatrix objects
+dtrain <- xgb.DMatrix(data = train_data_numeric, label = train_labels)
+dtest <- xgb.DMatrix(data = test_data_numeric)
+
+# Set parameters for XGBoost
+params <- list(
+  objective = "binary:logistic",  # Binary classification
+  eval_metric = "error", # to evaluaion metric
+  max_depth = 6, # maximum depth 
+  eta = 0.3,# learning rate
+  nthread = 2 #number of threads to use for parallel computation
+)
+
+# Train the XGBoost model
+model <- xgb.train(params = params, data = dtrain, nrounds = 100)
+
+# Make predictions on the test set
+predictions <- predict(model, dtest)
+
+# Convert probabilities to binary labels
+predicted_labels <- ifelse(predictions > 0.5, 1, 0) # Probabilities greater than 0.5 are classified as 1 (fire), and those less than or equal to 0.5 are classified as 0 (not fire).
+
+# Create confusion matrix
+confusion_matrix <- table(Predicted = predicted_labels, Actual = test_labels)
+print(confusion_matrix)
+
+# Calculate accuracy
+accuracy <- (TP + TN) / sum(confusion_matrix)
+
+# Calculate test error
+test_error <- (FP + FN) / sum(confusion_matrix)
+
+# Calculate recall
+recall <- TP / (TP + FN)
+
+# Calculate precision
+precision <- TP / (TP + FP)
+
+# Calculate F1 score
+f1_score <- 2 * (precision * recall) / (precision + recall)
+
+# Print results
+print(paste("Accuracy:", accuracy))
+print(paste("Test Error:", test_error))
+print(paste("Recall:", recall))
+print(paste("Precision:", precision))
+print(paste("F1 Score:", f1_score))
+
+# Evaluate the model performance
+accuracy <- mean(predicted_labels == test_labels)
+print(paste("Accuracy:", accuracy))
+
+```
+ XGBoost uses DMatrix objects to efficiently store and manipulate data. The xgb.DMatrix function creates DMatrix objects for both the training and test data.
+  The model is trained using the metrics explained in the code, and then the predict function is used to make predictions on the test data. The model outputs probabilities for each data point, indicating the likelihood of the class being 1 (fire). To obtain binary predictions, a threshold of 0.5 is used.
+ 
+ Accuracy (0.875) suggests that the model correctly predicted the class in 87.5% of the cases on the test set. The Test Error(0.125) indicates that only 12.5% of the predictions were incorrect.Recall of (0.8387) means that 83.87% of the actual "fire" instances were correctly identified by the model. The recall(0.8387) suggests that there is still some room for improvement, as about 16% of the actual fires were not detected by the model. Moreover,the Precision (0.963) shows that the model is good at correctly identifying fire instances when it predicts them.Finally, the F1 Score (0.897) suggests that the model performs well in both detecting fires (high recall) and making accurate fire predictions (high precision).
+ 
+
+## SVM
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+set.seed(111)
+
+# Ensure Classes column exists and is a factor
+data$Classes <- factor(data$Classes, levels = c("not fire", "fire"))
+
+ # Split the data, keeping the Classes column
+ split <- createDataPartition(data$Classes, p = 0.8, list = FALSE)
+ train_data <- data[split, ]
+ test_data <- data[-split, ]
+
+# Check missing values in training and testing datasets
+missing_train <- colSums(is.na(train_data))
+missing_test <- colSums(is.na(test_data))
+
+# Impute numeric columns with mean and factor columns with mode
+impute_missing_values <- function(df) {
+  df <- df %>%
+    mutate(across(where(is.numeric), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))) %>%
+    mutate(across(where(is.factor), ~ ifelse(is.na(.), as.character(Mode(.)), as.character(.))))
+  return(df)
+}
+
+# Function to calculate mode (for categorical variables)
+Mode <- function(x) {
+  ux <- unique(na.omit(x))
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+# Apply imputation function
+train_data <- impute_missing_values(train_data)
+test_data <- impute_missing_values(test_data)
+
+# Re-check for missing values after imputation
+missing_train_final <- colSums(is.na(train_data))
+missing_test_final <- colSums(is.na(test_data))
+
+
+# Halt execution if missing values remain
+if (any(missing_train_final > 0) || any(missing_test_final > 0)) {
+  stop("Missing values remain in the dataset after imputation.")
+}
+
+# Load necessary libraries
+if (!requireNamespace("kernlab", quietly = TRUE)) {
+  install.packages("kernlab")
+}
+
+library(caret)
+library(e1071)
+
+# Set up train control
+train_control <- trainControl(method = "cv", number = 5)
+
+# Linear Kernel SVM
+svm_linear <- train(
+  Classes ~ Temperature + RH + Ws + Rain + FFMC + DMC + ISI + BUI + FWI + Region + DC,
+  data = train_data,
+  method = "svmLinear",
+  trControl = train_control,
+  tuneGrid = expand.grid(C = c(0.1, 1, 10))
+)
+
+# Polynomial Kernel SVM
+svm_poly <- train(
+  Classes ~ Temperature + RH + Ws + Rain + FFMC + DMC + ISI + BUI + FWI + Region + DC,
+  data = train_data,
+  method = "svmPoly",
+  trControl = train_control,
+  tuneGrid = expand.grid(
+    .degree = 2:3,
+    .scale = 1,
+    .C = c(0.1, 1, 10)
+  )
+)
+
+# Radial Basis Function (RBF) Kernel SVM
+svm_rbf <- train(
+  Classes ~ Temperature + RH + Ws + Rain + FFMC + DMC + ISI + BUI + FWI + Region + DC,
+  data = train_data,
+  method = "svmRadial",
+  trControl = train_control,
+  tuneGrid = expand.grid(
+    .sigma = c(0.01, 0.1, 1),
+    .C = c(0.1, 1, 10)
+  )
+)
+
+# Evaluate models on the test set
+pred_linear <- predict(svm_linear, newdata = test_data)
+pred_poly <- predict(svm_poly, newdata = test_data)
+pred_rbf <- predict(svm_rbf, newdata = test_data)
+
+
+# Confusion Matrix
+conf_matrix_linear <- table(Predicted = pred_linear, Actual = test_data$Classes)
+conf_matrix_poly <- table(Predicted = pred_poly, Actual = test_data$Classes)
+conf_matrix_rbf <- table(Predicted = pred_rbf, Actual = test_data$Classes)
+
+
+# Print Confusion Matrix
+print(conf_matrix_linear)
+print(conf_matrix_poly)
+print(conf_matrix_rbf)
+
+```
+We trained three SVM models using different kernel types: linear, polynomial, and radial basis function (RBF). 5-fold cross-validation for hyperparameter tuning by trainControl(). Then, regularization parameter C is tuned over 3 values for the linear kernel.The polynomial kernel model includes additional hyperparameters for the degree of the polynomial and scale factor, while the RBF kernel model tunes both the sigma (kernel width) and C parameters. Each model is trained using a common formula that specifies several predictor variables alongside the target variable. 
+
+Linear:
+True Negative (TN): 21 - The model correctly classified 21 instances as "not fire" when they were actually "not fire."
+True Positive (TP): 25 - The model correctly classified 25 instances as "fire" when they were actually "fire."
+False Positive (FP): 0 - The model misclassified 0 instances as "fire" when they were actually "not fire."
+False Negative (FN): 2 - The model misclassified 2 instances as "not fire" when they were actually "fire."
+The total number is 48, which represents the testing sample size (20% of the data set).
+
+Polynomial:
+True Negative (TN): 21 - The model correctly classified 21 instances as "not fire" when they were actually "not fire."
+True Positive (TP): 24 - The model correctly classified 24 instances as "fire" when they were actually "fire."
+False Positive (FP): 0 - The model misclassified 0 instances as "fire" when they were actually "not fire."
+False Negative (FN): 3 - The model misclassified 3 instances as "not fire" when they were actually "fire."
+The total number is 48, which represents the testing sample size (20% of the data set).
+
+RBF:
+True Negative (TN): 20 - The model correctly classified 20 instances as "not fire" when they were actually "not fire."
+True Positive (TP): 26 - The model correctly classified 26 instances as "fire" when they were actually "fire."
+False Positive (FP): 1 - The model misclassified 1 instance as "fire" when it was actually "not fire."
+False Negative (FN): 1 - The model misclassified 1 instance as "not fire" when it was actually "fire."
+The total number is 48, which represents the testing sample size (20% of the data set).
+
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+ #Calculate Accuracy
+accuracy_linear <- sum(diag(conf_matrix_linear)) / sum(conf_matrix_linear)
+accuracy_poly <- sum(diag(conf_matrix_poly)) / sum(conf_matrix_poly)
+accuracy_rbf <- sum(diag(conf_matrix_rbf)) / sum(conf_matrix_rbf)
+
+
+# Calculate Test Error
+test_error_linear <- 1 - accuracy_linear
+test_error_poly <- 1 - accuracy_poly
+test_error_rbf <- 1 - accuracy_rbf
+
+# Calculate Recall (Sensitivity)
+recall_linear <- ifelse(sum(conf_matrix_linear[2, ]) > 0, 
+                     conf_matrix_linear[2, 2] / sum(conf_matrix_linear[2, ]), 
+                     NA)
+recall_poly <- ifelse(sum(conf_matrix_poly[2, ]) > 0, 
+                     conf_matrix_poly[2, 2] / sum(conf_matrix_poly[2, ]), 
+                     NA)
+recall_rbf <- ifelse(sum(conf_matrix_rbf[2, ]) > 0, 
+                     conf_matrix_rbf[2, 2] / sum(conf_matrix_rbf[2, ]), 
+                     NA)
+
+# Calculate Precision
+precision_linear <- ifelse(sum(conf_matrix_linear[, 2]) > 0, 
+                        conf_matrix_linear[2, 2] / sum(conf_matrix_linear[, 2]), 
+                        NA)
+precision_poly <- ifelse(sum(conf_matrix_poly[, 2]) > 0, 
+                        conf_matrix_poly[2, 2] / sum(conf_matrix_poly[, 2]), 
+                        NA)
+precision_rbf <- ifelse(sum(conf_matrix_rbf[, 2]) > 0, 
+                        conf_matrix_rbf[2, 2] / sum(conf_matrix_rbf[, 2]), 
+                        NA)
+
+
+# Calculate F1 Score
+f1_score_linear <- ifelse(!is.na(precision_linear) && !is.na(recall_linear) && 
+                       (precision_linear + recall_linear) > 0,
+                       2 * (precision_linear * recall_linear) / (precision_linear + recall_linear),
+                       NA)
+f1_score_poly <- ifelse(!is.na(precision_poly) && !is.na(recall_poly) && 
+                       (precision_poly + recall_poly) > 0,
+                       2 * (precision_poly * recall_poly) / (precision_poly + recall_poly),
+                       NA)
+f1_score_rbf <- ifelse(!is.na(precision_rbf) && !is.na(recall_rbf) && 
+                       (precision_rbf + recall_rbf) > 0,
+                       2 * (precision_rbf * recall_rbf) / (precision_rbf + recall_rbf),
+                       NA)
+
+cat("\nAccuracy on Test Set:\n")
+cat("Linear Kernel SVM Accuracy: ", accuracy_linear, "\n")
+cat("Polynomial Kernel SVM Accuracy: ", accuracy_poly, "\n")
+cat("RBF Kernel SVM Accuracy: ", accuracy_rbf, "\n")
+
+cat("\nRecall on Test Set:\n")
+cat("Linear Kernel SVM Recall: ", recall_linear, "\n")
+cat("Polynomial Kernel SVM Recall: ", recall_poly, "\n")
+cat("RBF Kernel SVM Recall: ", recall_rbf, "\n")
+
+cat("\nPrecision on Test Set:\n")
+cat("Linear Kernel SVM Precision: ", precision_linear, "\n")
+cat("Polynomial Kernel SVM Precision: ", precision_poly, "\n")
+cat("RBF Kernel SVM Precision: ", precision_rbf, "\n")
+
+cat("\nF1-Score on Test Set:\n")
+cat("Linear Kernel SVM F1-Score: ", f1_score_linear, "\n")
+cat("Polynomial Kernel SVM F1-Score: ", f1_score_poly, "\n")
+cat("RBF Kernel SVM F1-Score: ", f1_score_rbf, "\n")
+
+```
+
+# Graphical Comparison
+
+```{r message=FALSE, warning=FALSE, echo=FALSE}
+
+metrics <- data.frame(
+  Model = c("Linear Kernel", "Polynomial Kernel", "RBF Kernel"),
+  Accuracy = c(accuracy_linear, accuracy_poly, accuracy_rbf),
+  Precision = c(precision_linear, precision_poly, precision_rbf),
+  Recall = c(recall_linear, recall_poly, recall_rbf),
+  F1_Score = c(f1_score_linear, f1_score_poly, f1_score_rbf)
+)
+melted_metrics <- melt(metrics, id.vars = "Model")
+
+# Create a bar plot for all metrics
+ggplot(melted_metrics, aes(x = Model, y = value, fill = variable)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_minimal() +
+  labs(title = "Model Performance Comparison", x = "Model", y = "Metric Value", fill = "Metric") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+```
+ 
+  Accuracy: The accuracy is considered high for all three models, with the Linear and RBF kernels performing similarly (95.8%), while the Polynomial kernel has a slightly lower accuracy (93.75%). This indicates that all three models are effective in classifying the test data, but the Polynomial kernel is marginally less accurate.
+  Precision:The Linear and Polynomial kernels (1.0). This suggests that both these models are very conservative in predicting the "fire" class, avoiding false positives. The RBF kernel, however, has a precision of approximately 0.95, which still indicates a high level of correctness, but there are a few more false positives compared to the other models.
+  Recall: The RBF kernel has the highest recall (0.95), meaning it correctly identifies most of the actual "fire" cases. The Linear kernel has a slightly lower recall (0.91), while the Polynomial kernel's recall is the lowest at 0.875, suggesting it misses more true positives than the other two models.
+  F1-Score: The Linear and Polynomial kernels both have strong F1-Scores (approximately 0.95), while the RBF kernel has a slightly lower F1-Score (0.95). Despite this, all models perform similarly well in terms of the F1-Score, indicating a good balance between precision and recall.
+  
+  In terms of overall performance, the Linear Kernel SVM is slightly better due to its superior F1 score and perfect precision. However, if detecting as many "fire" instances as possible is the priority, the RBF Kernel SVM might be the better choice because of its higher recall.
+  
+
+## Comparison tools
+
+```{r warning= FALSE, messages = FALSE}
+
+# Create the model comparison data frame
+model_comparison <- data.frame(
+  Model = c("Logistic Regression", "KNN", "LDA", "QDA", "Tree (random Forest)", 
+            "Tree (bagging)", "Tree (boosting)", "SVM (Linear)", "SVM (Polynomial)", "SVM (RBF)"),
+  Accuracy = c(0.9583, 0.875, 0.95, 0.9792, 1, 0.9791, 0.9791, 0.95, 0.9375, 0.958),
+  Precision = c(0.931, 0.9629, 0.9629, 1, 1, 1, 0.9629, 1, 1, 0.952),
+  Recall = c(1, 0.8387, 0.9629, 0.9643, 1, 1, 0.8387, 0.913, 0.875, 0.952)
+)
+
+# View the comparison table
+print(model_comparison)
+
+# Find the best model based on Accuracy
+best_model <- model_comparison[which.max(model_comparison$Accuracy), ]
+print(paste("Best Model Based on Accuracy:", best_model$Model))
+
+# Find the best model based on Precisions
+best_model <- model_comparison[which.max(model_comparison$Precision), ]
+print(paste("Best Model Based on Precision:", best_model$Model))
+
+# Find the best model based on Recall
+best_model <- model_comparison[which.max(model_comparison$Recall), ]
+print(paste("Best Model Based on Recall:", best_model$Model))
+
+  #Reshape the data to a longer format for easier plotting
+library(tidyr)
+
+model_comparison_long <- model_comparison %>%
+  gather(key = "Metric", value = "Value", Accuracy, Precision, Recall)
+
+# Create a bar plot for Accuracy, Precision, and Recall comparison
+library(ggplot2)
+
+ggplot(model_comparison_long, aes(x = Model, y = Value, fill = Metric)) +
+  geom_bar(stat = "identity", position = "dodge") +  # Position dodge to separate bars for each metric
+  theme_minimal() +
+  labs(title = "Model Comparison: Accuracy, Precision, and Recall",
+       x = "Model",
+       y = "Performance") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_brewer(palette = "Set4") 
+
+```
+  To assess which model perform better on our data set we used the calculated metrics accuracy,precision, and recall.By comparison, we found that the Random Forest have the highest accuracy and recall, and precision among all trained model. In addition the graph ensures our conclusion as the Random Forest outperforms all other metrics 
+
+# ROC Curves
+```{r echo=FALSE, message=FALSE}
+
+# ROC curve
+roc_curve <- roc(test_data$Classes, predicted_probs)
+plot(roc_curve, main = "ROC Curve", col = "blue", lwd = 2)
+
+# LDA Model: ROC
+roc_lda <- roc(test_data$Classes, ldaPredictions$posterior[, 2])  # Extract probabilities for class 1
+lines(roc_lda, col = "red", lwd = 2)  # Add ROC for LDA
+
+# QDA Model: ROC
+roc_qda <- roc(test_data$Classes, QDAPredictions$posterior[, 2])  # Extract probabilities for class 1
+lines(roc_qda, col = "purple", lwd = 2)  # Add ROC for QDA
+
+# ROC for Unpruned Decision Tree
+roc_unpruned <- roc(test_data$Classes, predict(unpruned_tree, newdata = test_data, type = "prob")[, 2])  # Probabilities for class 1
+lines(roc_unpruned, col = "green", lwd = 2)  # Add ROC for Unpruned Decision Tree
+
+# ROC for Pruned Decision Tree
+roc_pruned <- roc(test_data$Classes, predict(pruned_tree, newdata = test_data, type = "prob")[, 2])  # Probabilities for class 1
+lines(roc_pruned, col = "orange", lwd = 2)  # Add ROC for Pruned Decision Tree
+
+# ROC for Bagging (Random Forest)
+roc_bagging <- roc(test_data$Classes, bagging_probs)  # Compute ROC curve for Random Forest
+lines(roc_bagging, col = "lightblue", lwd = 2)  # Add ROC for Bagging Tree
+
+# ROC Curve for Random Forest
+roc_rf <- roc(test_data$Classes, rf_probs)  # ROC Curve for Random Forest
+lines(roc_rf, col = "cyan", lwd = 2)  # Add ROC for Random Forest
+
+#  ROC curve using the probabilities (not the binary labels)
+roc_xgboost <- roc(test_labels, predictions)  # Use the raw predicted probabilities for ROC
+lines(roc_xgboost, col = "darkgreen", lwd = 2) # Plot the ROC curve for XGBoost
+
+# Add legend
+legend("bottomright", legend = c("Logistic", "LDA", "QDA", "Unpruned", "Pruned", "Bagging", "Random Forest","boosting"), 
+       col = c("blue", "red", "purple", "green", "orange", "lightblue", "cyan","darkgreen"), lwd = 2)
+
+
+# Calculate AUC for each model
+auc_logistic <- auc(roc_curve)
+auc_lda <- auc(roc_lda)
+auc_qda <- auc(roc_qda)
+auc_unpruned <- auc(roc_unpruned)
+auc_pruned <- auc(roc_pruned)
+auc_bagging <- auc(roc_bagging)
+auc_rf <- auc(roc_rf)
+auc_xgboost <- auc(roc_xgboost)
+
+# Print AUC values
+cat("\nAUC for Models:\n")
+cat("Logistic Regression: ", auc_logistic, "\n")
+cat("LDA: ", auc_lda, "\n")
+cat("QDA: ", auc_qda, "\n")
+cat("Unpruned Decision Tree: ", auc_unpruned, "\n")
+cat("Pruned Decision Tree: ", auc_pruned, "\n")
+cat("Bagging (Random Forest): ", auc_bagging, "\n")
+cat("Random Forest: ", auc_rf, "\n")
+cat("XGBoost: ", auc_xgboost, "\n")
+
+```
+   In addition, we plotted the ROC curve and calculated the AUC value of different models in order to assess their performance. And the results reinforced that the Random forest outperform all other models. However, it has the same performance as in boosting and bagging random forests.
+   
+   This project has provided us with valuable hands-on experience in learning the R programming language and exploring various libraries commonly used in machine learning. Throughout the project, we gained insights into how to train different classification models and assess their performance. As this is our first time applying the concepts learned in the Data Mining course, we recognize that the project requires several adjustments and improvements. We would greatly appreciate detailed feedback to help refine our approach and further enhance our data analysis skills. 
