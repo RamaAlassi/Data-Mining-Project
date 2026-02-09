@@ -49,7 +49,7 @@ The following classification models were implemented and compared:
 
 ---
 
-## 🛠 Tools & Technologies
+## Tools & Technologies
 - **R**
 - **RStudio**
 - R Markdown for reporting
@@ -57,8 +57,13 @@ The following classification models were implemented and compared:
 
 ---
 
+## Live Project Deployment
+https://ramaalassi.github.io/Data-Mining-Project/index.html
+
+...
+
 ## Results & Findings
-- Environmental variables such as temperature and humidity showed notable influence on fire occurrence.
+- Environmental variables such as temperature and humidity showed a notable influence on fire occurrence.
 - Logistic Regression, LDA, and QDA produced comparable results, with performance varying based on model assumptions.
 - The comparison highlights the importance of selecting models based on data distribution and problem context.
 
