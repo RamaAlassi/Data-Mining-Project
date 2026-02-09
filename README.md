@@ -4,14 +4,14 @@ This project applies data mining and statistical learning techniques to analyze 
 
 ---
 
-## 📌 Project Overview
+## Project Overview
 Forest fires pose significant environmental and economic risks. By analyzing historical data, this project aims to identify key factors influencing fire occurrence and compare multiple classification models to determine the most effective approach for prediction.
 
 This project was developed as part of a **Data Mining course (Fall 2024)**.
 
 ---
 
-## 📊 Dataset
+## Dataset
 The dataset contains environmental and weather-related variables commonly associated with forest fire activity, such as:
 - Temperature
 - Humidity
@@ -23,7 +23,7 @@ The data was preprocessed to ensure consistency, handle missing values, and prep
 
 ---
 
-## ⚙️ Methodology
+## Methodology
 
 ### 1. Data Preprocessing
 - Data cleaning and formatting
@@ -57,11 +57,8 @@ The following classification models were implemented and compared:
 
 ---
 
-## 📈 Results & Findings
+## Results & Findings
 - Environmental variables such as temperature and humidity showed notable influence on fire occurrence.
 - Logistic Regression, LDA, and QDA produced comparable results, with performance varying based on model assumptions.
 - The comparison highlights the importance of selecting models based on data distribution and problem context.
 
----
-
-## 📁 Project Structure
